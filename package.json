@@ -1,0 +1,59 @@
+{
+  "name": "@climba03003/mongodb-controller",
+  "version": "1.0.0",
+  "description": "MongoDB Controller",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "directories": {
+    "lib": "lib",
+    "test": "test"
+  },
+  "dependencies": {
+    "@climba03003/event-emitter": "^1.0.2",
+    "@climba03003/mongodb-connector": "^1.0.0",
+    "@climba03003/validator": "^1.2.0",
+    "@types/debug": "^4.1.5",
+    "@types/mongodb": "^3.3.14",
+    "@types/node": "^13.7.4",
+    "debug": "^4.1.1",
+    "mongodb": "^3.4.1"
+  },
+  "devDependencies": {
+    "@types/mocha": "^7.0.1",
+    "@typescript-eslint/eslint-plugin": "^2.21.0",
+    "@typescript-eslint/parser": "^2.21.0",
+    "coveralls": "^3.0.8",
+    "eslint": "^6.6.0",
+    "eslint-config-prettier": "^6.7.0",
+    "eslint-plugin-prettier": "^3.1.1",
+    "mocha": "^7.0.1",
+    "mocha-lcov-reporter": "^1.3.0",
+    "nyc": "^15.0.0",
+    "prettier": "^1.19.1",
+    "should": "^13.2.3",
+    "typescript": "^3.6.4"
+  },
+  "scripts": {
+    "preeslint": "npm install -D eslint prettier eslint-config-prettier eslint-plugin-prettier @typescript-eslint/parser @typescript-eslint/eslint-plugin",
+    "eslint": "eslint --fix --ext .ts lib test",
+    "build": "tsc --skipLibCheck",
+    "pretest": "npm run build",
+    "test": "nyc --reporter=html --reporter=text --include=lib/**/*.js --all mocha",
+    "precoveralls": "npm run build",
+    "coveralls": "nyc report --reporter=text-lcov | coveralls && rm -rf ./coverage",
+    "postinstall": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/climba03003/MongoDB-Controller.git"
+  },
+  "keywords": [
+    "MongoDB",
+    "Controller"
+  ],
+  "author": "KaKa",
+  "license": "GPL-3.0"
+}

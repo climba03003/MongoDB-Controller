@@ -1,0 +1,37 @@
+language: node_js
+node_js:
+  - "12"
+  - "10"
+
+script:
+  - npm run eslint
+  - npm run test
+
+after_success:
+  - npm run coveralls
+
+jobs:
+  include:
+    - stage: Publish
+      node_js: "12"
+      script: skip
+      before_deploy:
+        - npm run build
+      deploy:
+        - provider: npm
+          email: "$NPM_EMAIL"
+          api_key: "$NPM_API_TOKEN"
+          edge:
+            branch: master
+          skip_cleanup: true
+          on:
+            branch: release
+        - provider: npm
+          registry: https://npm.pkg.github.com
+          email: "$GITHUB_EMAIL"
+          api_key: "$GITHUB_API_TOKEN"
+          edge:
+            branch: master
+          skip_cleanup: true
+          on:
+            branch: release
