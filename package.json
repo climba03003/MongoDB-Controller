@@ -41,7 +41,6 @@
     "test": "nyc --reporter=html --reporter=text --include=lib/**/*.js --all mocha",
     "precoveralls": "npm run build",
     "coveralls": "nyc report --reporter=text-lcov | coveralls && rm -rf ./coverage",
-    "postinstall": "npm run build"
   },
   "publishConfig": {
     "access": "public"
