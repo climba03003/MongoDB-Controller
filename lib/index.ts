@@ -52,7 +52,7 @@ export function serializeUpdateDocument<TSchema>(value: UpdateQuery<TSchema> | P
   return value;
 }
 
-export class Controller<TSchema> extends EventEmitter {
+export class Controller<DefaultSchema, TSchema = Partial<DefaultSchema>> extends EventEmitter {
   protected __name!: string;
   protected __connector!: Connector;
   protected __collection!: Collection<TSchema>;
@@ -153,7 +153,10 @@ export class Controller<TSchema> extends EventEmitter {
   //=======================================================READ==========================================================
 
   // Find
-  public async find(filter: FilterQuery<TSchema> = {}, options?: FindOneOptions): Promise<FindResult<TSchema>> {
+  public async find(
+    filter: FilterQuery<TSchema> = {},
+    options?: FindOneOptions<TSchema>
+  ): Promise<FindResult<TSchema>> {
     if (!this.__isConnected) await this.connect();
     const args: FindArguments<TSchema> = { result: undefined, filter: filter, options: options };
     console.debug('[%s] Finding documents:\n %j', this.name, args.filter);
@@ -165,7 +168,10 @@ export class Controller<TSchema> extends EventEmitter {
   }
 
   // Find One
-  public async findOne(filter: FilterQuery<TSchema> = {}, options?: FindOneOptions): Promise<FindOneResult<TSchema>> {
+  public async findOne(
+    filter: FilterQuery<TSchema> = {},
+    options?: FindOneOptions<TSchema>
+  ): Promise<FindOneResult<TSchema>> {
     if (!this.__isConnected) await this.connect();
     const args: FindOneArguments<TSchema> = { result: undefined, filter: filter, options: options };
     console.debug('[%s] Finding document:\n %j', this.name, args.filter);
@@ -321,7 +327,7 @@ export class Controller<TSchema> extends EventEmitter {
   }
 }
 
-export interface Controller<TSchema> {
+export interface Controller<DefaultSchema, TSchema = Partial<DefaultSchema>> {
   insert(docs: OptionalId<TSchema>, options?: CollectionInsertOneOptions): Promise<InsertOneResult<TSchema>>;
   insert(docs: Array<OptionalId<TSchema>>, options?: CollectionInsertManyOptions): Promise<InsertManyResult<TSchema>>;
 
@@ -406,14 +412,14 @@ export type FindResult<TSchema> = Cursor<TSchema>;
 export type FindArguments<TSchema> = {
   result?: FindResult<TSchema>;
   filter: FilterQuery<TSchema>;
-  options?: FindOneOptions;
+  options?: FindOneOptions<TSchema>;
 };
 
 export type FindOneResult<TSchema> = TSchema | null;
 export type FindOneArguments<TSchema> = {
   result?: FindOneResult<TSchema>;
   filter: FilterQuery<TSchema>;
-  options?: FindOneOptions;
+  options?: FindOneOptions<TSchema>;
 };
 
 export type UpdateOneResult<TSchema> = UpdateWriteOpResult;
