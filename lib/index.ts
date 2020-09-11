@@ -331,24 +331,75 @@ export interface Controller<DefaultSchema, TSchema = Partial<DefaultSchema>> {
   insert(docs: OptionalId<TSchema>, options?: CollectionInsertOneOptions): Promise<InsertOneResult<TSchema>>;
   insert(docs: Array<OptionalId<TSchema>>, options?: CollectionInsertManyOptions): Promise<InsertManyResult<TSchema>>;
 
-  on(eventName: 'pre-insert-one', listener: EventCallback<InsertOneArguments<TSchema>>): this;
-  on(eventName: 'post-insert-one', listener: EventCallback<InsertOneArguments<TSchema>>): this;
-  on(eventName: 'pre-insert-many', listener: EventCallback<InsertManyArguments<TSchema>>): this;
-  on(eventName: 'post-insert-many', listener: EventCallback<InsertManyArguments<TSchema>>): this;
-  on(eventName: 'pre-find', listener: EventCallback<FindArguments<TSchema>>): this;
-  on(eventName: 'post-find', listener: EventCallback<FindArguments<TSchema>>): this;
-  on(eventName: 'pre-find-one', listener: EventCallback<FindOneArguments<TSchema>>): this;
-  on(eventName: 'post-find-one', listener: EventCallback<FindOneArguments<TSchema>>): this;
-  on(eventName: 'pre-update-one', listener: EventCallback<UpdateOneArguments<TSchema>>): this;
-  on(eventName: 'post-update-one', listener: EventCallback<UpdateOneArguments<TSchema>>): this;
-  on(eventName: 'pre-update-many', listener: EventCallback<UpdateManyArguments<TSchema>>): this;
-  on(eventName: 'post-update-many', listener: EventCallback<UpdateManyArguments<TSchema>>): this;
-  on(eventName: 'pre-delete-one', listener: EventCallback<DeleteOneArguments<TSchema>>): this;
-  on(eventName: 'post-delete-one', listener: EventCallback<DeleteOneArguments<TSchema>>): this;
-  on(eventName: 'pre-delete-many', listener: EventCallback<DeleteManyArguments<TSchema>>): this;
-  on(eventName: 'post-delete-many', listener: EventCallback<DeleteManyArguments<TSchema>>): this;
+  on(
+    eventName: 'pre-insert-one',
+    listener: EventCallback<InsertOneArguments<TSchema>> | EventCallback<InsertOneArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'post-insert-one',
+    listener: EventCallback<InsertOneArguments<TSchema>> | EventCallback<InsertOneArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'pre-insert-many',
+    listener: EventCallback<InsertManyArguments<TSchema>> | EventCallback<InsertManyArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'post-insert-many',
+    listener: EventCallback<InsertManyArguments<TSchema>> | EventCallback<InsertManyArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'pre-find',
+    listener: EventCallback<FindArguments<TSchema>> | EventCallback<FindArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'post-find',
+    listener: EventCallback<FindArguments<TSchema>> | EventCallback<FindArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'pre-find-one',
+    listener: EventCallback<FindOneArguments<TSchema>> | EventCallback<FindOneArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'post-find-one',
+    listener: EventCallback<FindOneArguments<TSchema>> | EventCallback<FindOneArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'pre-update-one',
+    listener: EventCallback<UpdateOneArguments<TSchema>> | EventCallback<UpdateOneArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'post-update-one',
+    listener: EventCallback<UpdateOneArguments<TSchema>> | EventCallback<UpdateOneArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'pre-update-many',
+    listener: EventCallback<UpdateManyArguments<TSchema>> | EventCallback<UpdateManyArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'post-update-many',
+    listener: EventCallback<UpdateManyArguments<TSchema>> | EventCallback<UpdateManyArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'pre-delete-one',
+    listener: EventCallback<DeleteOneArguments<TSchema>> | EventCallback<DeleteOneArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'post-delete-one',
+    listener: EventCallback<DeleteOneArguments<TSchema>> | EventCallback<DeleteOneArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'pre-delete-many',
+    listener: EventCallback<DeleteManyArguments<TSchema>> | EventCallback<DeleteManyArguments<DefaultSchema>>
+  ): this;
+  on(
+    eventName: 'post-delete-many',
+    listener: EventCallback<DeleteManyArguments<TSchema>> | EventCallback<DeleteManyArguments<DefaultSchema>>
+  ): this;
   on(eventName: 'collection-name-changed', listener: EventCollectionNameChangedCallback): this;
-  on(eventName: 'collection-changed', listener: EventCollectoinCallback<TSchema>): this;
+  on(
+    eventName: 'collection-changed',
+    listener: EventCollectoinCallback<TSchema> | EventCollectoinCallback<DefaultSchema>
+  ): this;
   on(eventName: 'connector-changed', listener: EventConnectorChangedCallback): this;
   on(eventName: 'setting-changed', listener: EventSettingChangedCallback): this;
 }
