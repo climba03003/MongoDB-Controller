@@ -70,6 +70,7 @@ export class Controller<T = any> extends EventEmitter {
     } else {
       this.logger = pino({
         name: `controller/${this.collectionName}`,
+        level: 'info',
         ...options?.logger
       })
     }
