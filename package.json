@@ -4,55 +4,60 @@
   "description": "MongoDB Controller",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./lib/mjs/index.js",
+      "require": "./lib/index.js"
+    }
+  },
   "directories": {
-    "lib": "lib",
-    "test": "test"
-  },
-  "dependencies": {
-    "@climba03003/event-emitter": "^1.0.2",
-    "@climba03003/mongodb-connector": "^1.0.0",
-    "@climba03003/validator": "^1.2.0",
-    "@types/debug": "^4.1.5",
-    "@types/mongodb": "^3.3.14",
-    "@types/node": "^13.7.4",
-    "debug": "^4.1.1",
-    "mongodb": "^3.4.1"
-  },
-  "devDependencies": {
-    "@types/mocha": "^7.0.1",
-    "@typescript-eslint/eslint-plugin": "^2.21.0",
-    "@typescript-eslint/parser": "^2.21.0",
-    "coveralls": "^3.0.8",
-    "eslint": "^6.6.0",
-    "eslint-config-prettier": "^6.7.0",
-    "eslint-plugin-prettier": "^3.1.1",
-    "mocha": "^7.0.1",
-    "mocha-lcov-reporter": "^1.3.0",
-    "nyc": "^15.0.0",
-    "prettier": "^1.19.1",
-    "should": "^13.2.3",
-    "typescript": "^3.6.4"
+    "lib": "lib"
   },
   "scripts": {
-    "preeslint": "npm install -D eslint prettier eslint-config-prettier eslint-plugin-prettier @typescript-eslint/parser @typescript-eslint/eslint-plugin",
-    "eslint": "eslint --fix --ext .ts lib test",
-    "build": "tsc --skipLibCheck",
-    "pretest": "npm run build",
-    "test": "nyc --reporter=html --reporter=text --include=lib/**/*.js --all mocha",
-    "precoveralls": "npm run build",
-    "coveralls": "nyc report --reporter=text-lcov | coveralls && rm -rf ./coverage"
+    "clean": "npx rimraf \"lib/**/*.js\" \"lib/**/*.map\" \"lib/**/*.d.ts\" \"test/**/*.js\" \"test/**/*.map\" \"test/**/*.d.ts\"",
+    "lint": "eslint --ext .ts lib test",
+    "lint:fix": "npm run lint -- --fix",
+    "build": "rollup -c",
+    "build:tsc": "tsc -b",
+    "unit": "jest",
+    "test": "npm run lint && npm run unit",
+    "coverage": "jest --coverage",
+    "prepublishOnly": "npm run build"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/climba03003/MongoDB-Controller.git"
+    "url": "git+https://github.com/climba03003/EventEmitter.git"
   },
-  "keywords": [
-    "MongoDB",
-    "Controller"
-  ],
   "author": "KaKa",
-  "license": "GPL-3.0"
+  "license": "GPL-3.0",
+  "dependencies": {
+    "@climba03003/event-emitter": "^2.0.0",
+    "@climba03003/mongodb-aggregate-builder": "^1.0.0",
+    "@climba03003/validator": "^2.1.0",
+    "@types/pino": "^6.3.8",
+    "pino": "^6.11.3",
+    "uuid": "^8.3.2"
+  },
+  "devDependencies": {
+    "@shelf/jest-mongodb": "^1.2.4",
+    "@types/jest": "^26.0.22",
+    "@types/mongodb": "^3.6.12",
+    "@types/uuid": "^8.3.0",
+    "@typescript-eslint/eslint-plugin": "4",
+    "eslint": "7",
+    "eslint-config-standard-with-typescript": "^20.0.0",
+    "eslint-plugin-import": "2",
+    "eslint-plugin-node": "11",
+    "eslint-plugin-promise": "5",
+    "eslint-plugin-standard": "4",
+    "husky": "^4.3.8",
+    "jest": "^26.6.3",
+    "prettier": "^2.2.1",
+    "ts-jest": "^26.5.5",
+    "typescript": "^4.2.4"
+  }
 }

@@ -1,504 +1,1068 @@
-import { EventEmitter } from '@climba03003/event-emitter';
-import { Connector } from '@climba03003/mongodb-connector';
-import * as Validator from '@climba03003/validator';
+import EventEmitter from '@climba03003/event-emitter'
+import AggregateBuilder, {
+  MatchPipeline,
+  SortPipeline
+} from '@climba03003/mongodb-aggregate-builder'
+import * as Validator from '@climba03003/validator'
 import {
   Collection,
   CollectionInsertManyOptions,
   CollectionInsertOneOptions,
   CommonOptions,
-  Cursor,
-  DeleteWriteOpResultObject,
   FilterQuery,
   FindOneOptions,
-  InsertOneWriteOpResult,
-  InsertWriteOpResult,
-  MongoClientOptions,
-  ObjectId,
   UpdateManyOptions,
   UpdateOneOptions,
-  UpdateQuery,
-  UpdateWriteOpResult
-} from 'mongodb';
-import * as console from './utilities';
+  UpdateQuery
+} from 'mongodb'
+import type { Logger, LoggerOptions } from 'pino'
+import * as pino from 'pino'
+import * as uuid from 'uuid'
+import {
+  kAddHooks,
+  kAppendBasicSchema,
+  kAppendUpdatedSchema,
+  kCollection,
+  kCreateIndex,
+  kNormalizeFilter,
+  kTransformRegExpSearch
+} from './constant'
+import {
+  isPinoLogger,
+  isUpdateQuery,
+  OptionalBasicSchema,
+  WithBasicSchema
+} from './util'
 
-export function isUpdateQuery<TSchema>(value: UpdateQuery<TSchema> | Partial<TSchema>): value is UpdateQuery<TSchema> {
-  const arr = [
-    '$currentDate',
-    '$inc',
-    '$min',
-    '$max',
-    '$mul',
-    '$rename',
-    '$set',
-    '$setOnInsert',
-    '$unset',
-    '$addToSet',
-    '$pop',
-    '$pull',
-    '$push',
-    '$pullAll',
-    '$bit'
-  ];
-  const keys = Object.keys(value);
-  return arr.some(key => keys.includes(key));
+export interface ControllerOptions {
+  logger?: LoggerOptions | Logger
+  searchFields?: string[]
+  filterRegExp?: RegExp
+  autoRegExpSearch?: boolean
+  buildAggregateBuilder?(): AggregateBuilder
 }
 
-export function isPartial<TSchema>(value: UpdateQuery<TSchema> | Partial<TSchema>): value is Partial<TSchema> {
-  return !isUpdateQuery(value);
-}
+export class Controller<T = any> extends EventEmitter {
+  private [kCollection]: Collection
+  collectionName: string
+  logger: Logger
+  searchFields: string[]
+  filterRegExp: RegExp
+  autoRegExpSearch: boolean
 
-export function serializeUpdateDocument<TSchema>(value: UpdateQuery<TSchema> | Partial<TSchema>): UpdateQuery<TSchema> {
-  if (isPartial(value)) return { $set: value };
-  return value;
-}
+  get collection (): Collection {
+    return this[kCollection]
+  }
 
-export class Controller<DefaultSchema, TSchema = Partial<DefaultSchema>> extends EventEmitter {
-  protected __name!: string;
-  protected __connector!: Connector;
-  protected __collection!: Collection<TSchema>;
-  protected __isConnected = false;
+  set collection (collection: Collection) {
+    this[kCollection] = collection
+  }
 
-  constructor(
-    name = 'default',
-    opt: Partial<ControllerOptions> = {
-      connector: Connector.instance()
+  constructor (collection?: Collection, options?: ControllerOptions) {
+    super()
+    if (Validator.isEmpty(collection)) {
+      throw new Error('collection cannot be empty')
     }
-  ) {
-    super();
-
-    this.connect = this.connect.bind(this);
-    this.disconnect = this.disconnect.bind(this);
-    this.__bindEvent = this.__bindEvent.bind(this);
-
-    opt = Object.assign({}, opt);
-
-    // this.connect();
-
-    this.off('connector-changed', this.__bindEvent);
-    this.on('connector-changed', this.__bindEvent);
-
-    this.name = name ?? 'default';
-    this.connector = opt.connector ?? Connector.instance();
-
-    this.off('collection-name-changed', this.connect);
-    this.on('collection-name-changed', this.connect);
-  }
-
-  protected async connect(): Promise<void> {
-    try {
-      console.debug('[%s] Try to retrieve collection %s', this.name, this.name);
-      this.collection = await this.connector.collection(this.name);
-      this.__isConnected = true;
-    } catch (err) {
-      console.warn('[%s] Unexpected error occured \n %j', this.name, err);
-    }
-  }
-
-  protected async disconnect(): Promise<void> {
-    this.__isConnected = false;
-  }
-
-  //======================================================CREATE=========================================================
-
-  //  Auto Select Between insertOne or insertMany'
-  public async insert(
-    docs: Array<OptionalId<TSchema>> | OptionalId<TSchema>,
-    options?: CollectionInsertManyOptions | CollectionInsertOneOptions
-  ): Promise<InsertManyResult<TSchema> | InsertOneResult<TSchema>> {
-    if (!this.__isConnected) await this.connect();
-
-    if (Validator.Array.isArray(docs)) {
-      return await this.insertMany(docs, options);
+    this.collection = collection
+    this.collectionName = this.collection.collectionName
+    if (isPinoLogger(options?.logger)) {
+      this.logger = options?.logger as Logger
     } else {
-      return await this.insertOne(docs, options);
+      this.logger = pino({
+        name: `controller/${this.collectionName}`,
+        level: 'info',
+        ...options?.logger
+      })
+    }
+    this.searchFields = options?.searchFields ?? []
+    this.filterRegExp =
+      options?.filterRegExp ??
+      /([a-zA-Z0-9.$]+):([a-zA-Z0-9-\u3000\u3400-\u4DBF\u4E00-\u9FFF.]+|{.+?}),/g
+    this.autoRegExpSearch = options?.autoRegExpSearch ?? false
+    this[kAddHooks]()
+    void this.emit('created')
+  }
+
+  /**
+   * Index
+   */
+  async [kCreateIndex] (): Promise<void> {
+    this.logger.trace('[func Symbol("createIndex")]')
+    await this.collection.createIndex(
+      {
+        id: 1
+      },
+      {
+        unique: true
+      }
+    )
+  }
+
+  /**
+   * Optional Create Index
+   */
+  async createIndex (): Promise<void> {
+    this.logger.trace('[func createIndex]')
+  }
+
+  [kAddHooks] (): void {
+    this.logger.trace('[func Symbol("addHooks")]')
+    const createIndex = async (): Promise<void> => {
+      await this[kCreateIndex]()
+      await this.createIndex()
+    }
+    this.once('created', createIndex)
+    this.once('post-reset', createIndex)
+  }
+
+  [kAppendBasicSchema] (
+    docs: T | T[]
+  ): WithBasicSchema<T> | Array<WithBasicSchema<T>> {
+    this.logger.trace('[func Symbol("appendBasicSchema")]')
+    const now = new Date()
+    if (Validator.isArray(docs)) {
+      return docs.map(function (d) {
+        return Object.assign({}, d, {
+          id: uuid.v4(),
+          createdAt: now,
+          updatedAt: now
+        })
+      })
+    } else {
+      return Object.assign({}, docs, {
+        id: uuid.v4(),
+        createdAt: now,
+        updatedAt: now
+      })
     }
   }
 
-  // Insert One Document
-  public async insertOne(
-    docs: OptionalId<TSchema>,
+  [kAppendUpdatedSchema] (
+    docs: T | UpdateQuery<T>
+  ): OptionalBasicSchema<T> | UpdateQuery<OptionalBasicSchema<T>> {
+    this.logger.trace('[func Symbol("appendUpdatedSchema")]')
+    if (isUpdateQuery(docs)) {
+      const item: OptionalBasicSchema<T> = this[kAppendBasicSchema](
+        docs.$set as T
+      )
+      delete item.id
+      delete item.createdAt
+      docs.$set = item
+      return docs
+    } else {
+      const result: OptionalBasicSchema<T> = this[kAppendBasicSchema](docs)
+      delete result.id
+      delete result.createdAt
+      return result
+    }
+  }
+
+  [kNormalizeFilter] (text: string | object): unknown {
+    const normalize = this[kNormalizeFilter].bind(this)
+    // security guard
+    const tmp =
+      Validator.isObject(text) && !Validator.isNull(text)
+        ? JSON.stringify(text)
+        : String(text)
+    if (tmp.includes('$function') || tmp.includes('$accumulator')) {
+      throw new Error('invalid operator found')
+    }
+    // start normalize
+    if (
+      Validator.isString(text) &&
+      text.startsWith('{') &&
+      text.endsWith('}')
+    ) {
+      return normalize(JSON.parse(text))
+    }
+    if (
+      tmp.toLocaleLowerCase() === 'true' ||
+      tmp.toLocaleLowerCase() === 'false'
+    ) {
+      return Boolean(tmp)
+    }
+    if (!isNaN(tmp as never as number)) {
+      return Number(tmp)
+    }
+    if (Validator.Date.isISO8601Date(tmp)) {
+      return new Date(tmp)
+    }
+    if (Validator.isArray(text)) {
+      return text.map(normalize)
+    }
+    if (
+      !Validator.isNumber(text) &&
+      !Validator.isString(text) &&
+      Validator.isJSON(text)
+    ) {
+      const o = JSON.parse(tmp)
+      Object.entries(o).forEach(function ([k, v]) {
+        // keep $expr $dateFromString work as before
+        // $regex must be string
+        if (k === 'dateString' || k === '$regex') {
+          o[k] = String(v)
+        } else {
+          o[k] = normalize(v as string)
+        }
+      })
+      return o
+    }
+    return text
+  }
+
+  [kTransformRegExpSearch] (text: string | object): unknown {
+    if (
+      typeof text === 'string' &&
+      !text.startsWith('{') &&
+      !text.endsWith('}')
+    ) {
+      return { $regex: text, $options: 'i' }
+    } else {
+      return text
+    }
+  }
+
+  async count (search?: string, filter?: string): Promise<number> {
+    this.logger.trace('[func count]')
+    await this.emit('pre-count', search, filter)
+    const found = await this.search(search, filter)
+    const result = found.length
+    await this.emit('post-count', result, search, filter)
+    return result
+  }
+
+  async search<U = any>(
+    search?: string,
+    filter?: string,
+    sort?: string,
+    page?: number,
+    pageSize?: number
+  ): Promise<U[]> {
+    this.logger.trace('[func search]')
+    await this.emit('pre-search', search, filter, sort, page, pageSize)
+    const pipeline = this.computePipeline(
+      search,
+      filter,
+      sort,
+      page,
+      pageSize
+    ).toArray()
+    const result = await this.collection.aggregate(pipeline).toArray()
+    await this.emit(
+      'post-search',
+      result,
+      search,
+      filter,
+      sort,
+      page,
+      pageSize
+    )
+    return result
+  }
+
+  async insertOne (
+    docs: T,
     options?: CollectionInsertOneOptions
-  ): Promise<InsertOneResult<TSchema>> {
-    if (!this.__isConnected) await this.connect();
-    const args: InsertOneArguments<TSchema> = { result: undefined, docs: docs, options: options };
-    console.debug('[%s] Inserting document:\n %j', this.name, args.docs);
-    await this.emit('pre-insert-one', args);
-    args.docs = Object.assign({}, args.docs, { createdAt: new Date() });
-    args.result = await this.collection.insertOne(args.docs, options);
-    await this.emit('post-insert-one', args);
-    console.debug('[%s] Inserted document:\n %j', this.name, args.docs);
-    return args.result;
+  ): Promise<T | null> {
+    this.logger.trace('[func insertOne]')
+    const doc = this[kAppendBasicSchema](docs)
+    await this.emit('pre-insert-one', doc, options)
+    await this.collection.insertOne(doc, options)
+    const result = await this.collection.findOne({
+      id: doc.id
+    })
+    await this.emit('post-insert-one', result, doc, options)
+    return result
   }
 
-  // Insert Many Documents
-  public async insertMany(
-    docs: Array<OptionalId<TSchema>>,
+  async insertMany (
+    docs: T[],
     options?: CollectionInsertManyOptions
-  ): Promise<InsertManyResult<TSchema>> {
-    if (!this.__isConnected) await this.connect();
-    const args: InsertManyArguments<TSchema> = { result: undefined, docs: docs, options: options };
-    console.debug('[%s] Inserting documents:\n %j', this.name, args.docs);
-    await this.emit('pre-insert-many', args);
-    args.docs = docs.map(function(docs) {
-      return Object.assign({}, docs, { createdAt: new Date() });
-    });
-    args.result = await this.collection.insertMany(args.docs, options);
-    await this.emit('post-insert-many', args);
-    console.debug('[%s] Inserted documents:\n %j', this.name, args.docs);
-    return args.result;
+  ): Promise<T[]> {
+    this.logger.trace('[func insertMany]')
+    const doc = this[kAppendBasicSchema](docs)
+    await this.emit('pre-insert-many', doc, options)
+    await this.collection.insertMany(doc, options)
+    const result = await this.collection
+      .find(
+        {
+          id: {
+            $in: doc.map((d) => d.id)
+          }
+        },
+        {
+          sort: {
+            createdAt: 1
+          }
+        }
+      )
+      .toArray()
+    await this.emit('post-insert-many', result, doc, options)
+    return result
   }
 
-  //======================================================CREATE=========================================================
-
-  //=======================================================READ==========================================================
-
-  // Find
-  public async find(
-    filter: FilterQuery<TSchema> = {},
-    options?: FindOneOptions<TSchema>
-  ): Promise<FindResult<TSchema>> {
-    if (!this.__isConnected) await this.connect();
-    const args: FindArguments<TSchema> = { result: undefined, filter: filter, options: options };
-    console.debug('[%s] Finding documents:\n %j', this.name, args.filter);
-    await this.emit('pre-find', args);
-    args.result = await this.collection.find(args.filter, args.options);
-    await this.emit('post-find', args);
-    console.debug('[%s] Found documents:\n %j', this.name, args.filter);
-    return args.result;
+  async find (
+    filter: FilterQuery<T>,
+    options?: FindOneOptions<any>
+  ): Promise<T[]> {
+    this.logger.trace('[func find]')
+    await this.emit('pre-find', filter, options)
+    // TODO: upstream required the as statement here
+    const result = await this.collection
+      .find(filter, options as FindOneOptions<any>)
+      .toArray()
+    await this.emit('post-find', result, filter, options)
+    return result
   }
 
-  // Find One
-  public async findOne(
-    filter: FilterQuery<TSchema> = {},
-    options?: FindOneOptions<TSchema>
-  ): Promise<FindOneResult<TSchema>> {
-    if (!this.__isConnected) await this.connect();
-    const args: FindOneArguments<TSchema> = { result: undefined, filter: filter, options: options };
-    console.debug('[%s] Finding document:\n %j', this.name, args.filter);
-    await this.emit('pre-find-one', args);
-    args.result = await this.collection.findOne(args.filter, args.options);
-    await this.emit('post-find-one', args);
-    console.debug('[%s] Found document:\n %j', this.name, args.filter);
-    return args.result ?? null;
+  async findOne (
+    filter: FilterQuery<T>,
+    options?: FindOneOptions<any>
+  ): Promise<T | null> {
+    this.logger.trace('[func findOne]')
+    await this.emit('pre-find-one', filter, options)
+    const result = await this.collection.findOne(filter, options)
+    await this.emit('post-find-one', result, filter, options)
+    return result
   }
 
-  //=======================================================READ==========================================================
+  async findById (id: string, options?: FindOneOptions<any>): Promise<T | null> {
+    this.logger.trace('[func findById]')
+    await this.emit('pre-find-by-id', id, options)
+    const result = await this.collection.findOne({ id }, options)
+    await this.emit('post-find-by-id', result, id, options)
+    return result
+  }
 
-  //======================================================UPDATE=========================================================
-
-  // Update One
-  public async updateOne(
-    filter: FilterQuery<TSchema>,
-    update: UpdateQuery<TSchema> | Partial<TSchema>,
+  async updateOne (
+    filter: FilterQuery<T>,
+    docs: T | UpdateQuery<T>,
     options?: UpdateOneOptions
-  ): Promise<UpdateOneResult<TSchema>> {
-    if (!this.__isConnected) await this.connect();
-    const args: UpdateOneArguments<TSchema> = { result: undefined, filter: filter, update: update, options: options };
-    console.debug('[%s] Updating document:\n %j\n %j', this.name, args.filter, args.update);
-    await this.emit('pre-update-one', args);
-    // Partial TSchema should change to Update Query
-    args.update = serializeUpdateDocument(args.update);
-    args.update.$set = Object.assign({}, args.update.$set, { updatedAt: new Date() });
-    args.result = await this.collection.updateOne(args.filter, args.update, args.options);
-    await this.emit('post-update-one', args);
-    console.debug('[%s] Updated document:\n %j\n %j', this.name, args.filter, args.update);
-    return args.result;
+  ): Promise<T | null> {
+    this.logger.trace('[func updateOne]')
+    const doc = this[kAppendUpdatedSchema](docs)
+    await this.emit('pre-update-one', filter, doc, options)
+    if (isUpdateQuery(doc)) {
+      await this.collection.updateOne(filter, doc, options)
+    } else {
+      await this.collection.updateOne(filter, { $set: doc }, options)
+    }
+    const result = await this.collection.findOne(filter)
+    await this.emit('post-update-one', result, filter, doc, options)
+    return result
   }
 
-  // Update Many
-  public async updateMany(
-    filter: FilterQuery<TSchema>,
-    update: UpdateQuery<TSchema> | Partial<TSchema>,
+  async updateMany (
+    filter: FilterQuery<T>,
+    docs: T | UpdateQuery<T>,
     options?: UpdateManyOptions
-  ): Promise<UpdateManyResult<TSchema>> {
-    if (!this.__isConnected) await this.connect();
-    const args: UpdateManyArguments<TSchema> = { result: undefined, filter: filter, update: update, options: options };
-    console.debug('[%s] Updating documents:\n %j\n %j', this.name, args.filter, args.update);
-    await this.emit('pre-update-many', args);
-    // Partial TSchema should change to Update Query
-    args.update = serializeUpdateDocument(args.update);
-    args.update.$set = Object.assign({}, args.update.$set, { updatedAt: new Date() });
-    args.result = await this.collection.updateMany(args.filter, args.update, args.options);
-    await this.emit('post-update-many', args);
-    console.debug('[%s] Updated documents:\n %j\n %j', this.name, args.filter, args.update);
-    return args.result;
+  ): Promise<T[]> {
+    this.logger.trace('[func updateMany]')
+    const doc = this[kAppendUpdatedSchema](docs)
+    await this.emit('pre-update-many', filter, doc, options)
+    if (isUpdateQuery(doc)) {
+      await this.collection.updateMany(filter, doc, options)
+    } else {
+      await this.collection.updateMany(filter, { $set: doc }, options)
+    }
+    const result = await this.collection.find(filter).toArray()
+    await this.emit('post-update-many', result, filter, doc, options)
+    return result
   }
 
-  //======================================================UPDATE=========================================================
+  async updateById (
+    id: string,
+    docs: T | UpdateQuery<T>,
+    options?: FindOneOptions<any>
+  ): Promise<T | null> {
+    this.logger.trace('[func updateById]')
+    const doc = this[kAppendUpdatedSchema](docs)
+    await this.emit('pre-update-by-id', id, doc, options)
+    if (isUpdateQuery(doc)) {
+      await this.collection.updateOne({ id }, doc, options)
+    } else {
+      await this.collection.updateOne({ id }, { $set: doc }, options)
+    }
+    const result = await this.collection.findOne({ id }, options)
+    await this.emit('post-update-by-id', result, id, doc, options)
+    return result
+  }
 
-  //======================================================DELETE=========================================================
-
-  // Delete One
-  public async deleteOne(
-    filter: FilterQuery<TSchema>,
+  async deleteOne (
+    filter: FilterQuery<T>,
     options?: CommonOptions & { bypassDocumentValidation?: boolean }
-  ): Promise<DeleteOneResult<TSchema>> {
-    if (!this.__isConnected) await this.connect();
-    const args: DeleteOneArguments<TSchema> = { result: undefined, filter: filter, options: options };
-    console.debug('[%s] Deleting document:\n %j', this.name, args.filter);
-    await this.emit('pre-delete-one', args);
-    args.result = await this.collection.deleteOne(args.filter, args.options);
-    await this.emit('post-delete-one', args);
-    console.debug('[%s] Deleted document:\n %j', this.name, args.filter);
-    return args.result;
+  ): Promise<T | null> {
+    this.logger.trace('[func deleteOne]')
+    const result = await this.collection.findOne(filter)
+    await this.emit('pre-delete-one', filter, options)
+    await this.collection.deleteOne(filter, options)
+    await this.emit('post-delete-one', result, filter, options)
+    return result
   }
 
-  // Delete Many
-  public async deleteMany(filter: FilterQuery<TSchema>, options?: CommonOptions): Promise<DeleteManyResult<TSchema>> {
-    if (!this.__isConnected) await this.connect();
-    const args: DeleteManyArguments<TSchema> = { result: undefined, filter: filter, options: options };
-    console.debug('[%s] Deleting documents:\n %j', this.name, args.filter);
-    await this.emit('pre-delete-many', args);
-    args.result = await this.collection.deleteMany(args.filter, args.options);
-    await this.emit('post-delete-many', args);
-    console.debug('[%s] Deleted documents:\n %j', this.name, args.filter);
-    return args.result;
+  async deleteMany (
+    filter: FilterQuery<T>,
+    options?: CommonOptions & { bypassDocumentValidation?: boolean }
+  ): Promise<T[]> {
+    this.logger.trace('[func deleteMany]')
+    const result = await this.collection.find(filter).toArray()
+    await this.emit('pre-delete-many', filter, options)
+    await this.collection.deleteMany(filter, options)
+    await this.emit('post-delete-many', result, filter, options)
+    return result
   }
 
-  //======================================================DELETE=========================================================
-
-  protected __bindEvent(): void {
-    // update collection when connector connected
-    this.connector.off('connected', this.connect);
-    this.connector.on('connected', this.connect);
-    // disable controller when connector disconnect
-    this.connector.off('disconnect', this.disconnect);
-    this.connector.on('disconnect', this.disconnect);
+  async deleteById (
+    id: string,
+    options?: CommonOptions & { bypassDocumentValidation?: boolean }
+  ): Promise<T | null> {
+    this.logger.trace('[func deleteById]')
+    const result = await this.collection.findOne({ id }, options)
+    await this.emit('pre-delete-by-id', id, options)
+    await this.collection.deleteOne({ id }, options)
+    await this.emit('post-delete-by-id', result, id, options)
+    return result
   }
 
-  get name(): string {
-    return this.__name;
+  async resetDatabase (): Promise<boolean> {
+    this.logger.trace('[func resetDatabase]')
+    await this.emit('pre-reset')
+    await this.collection.drop()
+    await this.emit('post-reset')
+    return true
   }
 
-  set name(name: string) {
-    const o = String(this.__name);
-    if (!Validator.Empty.isEmpty(name) && Validator.String.isString(name) && !Validator.String.isIdentical(name, o)) {
-      this.__name = name;
-      this.emit('collection-name-changed', this.__name, o);
-      this.emit('setting-changed', {
-        type: 'collection-name',
-        current: this.__name,
-        previous: o
-      });
+  // query format search=<string> filter=foo:a,bar:b
+  computeQuery (search?: any, filter?: any, ..._args: any[]): AggregateBuilder {
+    const normalize = this[kNormalizeFilter].bind(this)
+    const transformRegExpSearch = this[kTransformRegExpSearch].bind(this)
+    this.logger.trace('[func computeQuery]')
+    const opt: MatchPipeline = {}
+    const arr: any[] = []
+    const builder = new AggregateBuilder()
+    if (
+      (Validator.isString(search) || Validator.isObject(search)) &&
+      Validator.isExist(search) &&
+      this.searchFields.length > 0
+    ) {
+      // search should use regex to maximize search result
+      if (this.autoRegExpSearch) {
+        search = transformRegExpSearch(search)
+      }
+      const sub: any[] = []
+      this.searchFields.forEach(function (fields) {
+        sub.push({ [fields]: normalize(search) })
+      })
+      arr.push({ $or: sub })
+    }
+    if (typeof filter === 'string') {
+      if (!filter.endsWith(',')) filter = filter + ','
+      let found = this.filterRegExp.exec(filter)
+      while (found !== null) {
+        const [, key, value] = found
+        arr.push({ [key]: normalize(value) })
+        found = this.filterRegExp.exec(filter)
+      }
+    }
+    if (arr.length > 0) {
+      opt.$and = arr
+    }
+    builder.match(opt)
+    return builder
+  }
+
+  // sort format +foo,-bar (+) can be omit
+  computeSort (sort?: string): AggregateBuilder | false {
+    this.logger.trace('[func computeSort]')
+    if (typeof sort === 'string') {
+      const opt: SortPipeline = {}
+      const builder = new AggregateBuilder()
+      sort.split(',').forEach(function (o) {
+        const orderKey = o.startsWith('-') ? '-' : '+'
+        const key = o.replace(orderKey, '').trim()
+        const order = orderKey === '-' ? -1 : 1
+        // prevent empty key
+        if (Validator.isExist(key)) opt[key] = order
+      })
+      builder.sort(opt)
+      return builder
+    } else {
+      return false
     }
   }
 
-  get connector(): Connector {
-    return this.__connector;
-  }
-
-  set connector(connector: Connector) {
-    const o = {
-      connectionString: this.__connector?.connectionString,
-      databaseName: this.__connector?.databaseName,
-      options: this.__connector?.options
-    };
-    const n = {
-      connectionString: connector?.connectionString,
-      databaseName: connector?.databaseName,
-      options: connector?.options
-    };
-    if (!Validator.Empty.isEmpty(connector) && !Validator.JSON.isIdentical(n, o)) {
-      this.__connector = connector;
-      this.emit('connector-changed', this.__connector, o);
-      this.emit('setting-changed', {
-        type: 'connector',
-        current: this.__connector,
-        previous: o
-      });
+  computeOption (page?: number, pageSize?: number): AggregateBuilder | false {
+    this.logger.trace('[func computeOption]')
+    if (typeof page !== 'undefined' && typeof pageSize !== 'undefined') {
+      const builder = new AggregateBuilder()
+      const skip = page > 0 ? (page - 1) * pageSize : 0
+      builder.limit(pageSize + skip)
+      builder.skip(skip)
+      return builder
+    } else {
+      return false
     }
   }
 
-  get collection(): Collection<TSchema> {
-    return this.__collection;
+  computePipeline (
+    search?: string,
+    filter?: string,
+    sort?: string,
+    page?: number,
+    pageSize?: number
+  ): AggregateBuilder {
+    const builder = this.buildAggregateBuilder()
+    builder.concat(this.computeQuery(search, filter))
+    const s = this.computeSort(sort)
+    if (s !== false) builder.concat(s)
+    const p = this.computeOption(page, pageSize)
+    if (p !== false) builder.concat(p)
+    return builder
   }
 
-  set collection(collection: Collection<TSchema>) {
-    const o = this.__collection;
-    if (!Validator.Empty.isEmpty(collection) && !Validator.Object.isEqual(collection, o)) {
-      this.__collection = collection;
-      this.emit('collection-changed', this.__collection, o);
-      this.emit('setting-changed', {
-        type: 'collection',
-        current: this.__collection,
-        previous: o
-      });
-    }
+  buildAggregateBuilder (): AggregateBuilder {
+    return new AggregateBuilder()
   }
 }
 
-export interface Controller<DefaultSchema, TSchema = Partial<DefaultSchema>> {
-  insert(docs: OptionalId<TSchema>, options?: CollectionInsertOneOptions): Promise<InsertOneResult<TSchema>>;
-  insert(docs: Array<OptionalId<TSchema>>, options?: CollectionInsertManyOptions): Promise<InsertManyResult<TSchema>>;
+/**
+ * Overload Methods
+ */
+export interface Controller<T = any> {
+  [kAppendBasicSchema](docs: T): WithBasicSchema<T>
+  [kAppendBasicSchema](docs: T[]): Array<WithBasicSchema<T>>
+  [kAppendUpdatedSchema](docs: T): OptionalBasicSchema<T>
+  [kAppendUpdatedSchema](
+    docs: UpdateQuery<T>
+  ): UpdateQuery<OptionalBasicSchema<T>>
 
+  on(event: 'created', callback: () => void | Promise<void>): this
+  on(event: 'pre-reset', callback: () => void | Promise<void>): this
+  on(event: 'post-reset', callback: () => void | Promise<void>): this
   on(
-    eventName: 'pre-insert-one',
-    listener: EventCallback<InsertOneArguments<TSchema>> | EventCallback<InsertOneArguments<DefaultSchema>>
-  ): this;
+    event: 'pre-insert-one',
+    callback: (
+      docs: T,
+      options?: CollectionInsertOneOptions
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'post-insert-one',
-    listener: EventCallback<InsertOneArguments<TSchema>> | EventCallback<InsertOneArguments<DefaultSchema>>
-  ): this;
+    event: 'post-insert-one',
+    callback: (
+      result: T | null,
+      docs: T,
+      options?: CollectionInsertOneOptions
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'pre-insert-many',
-    listener: EventCallback<InsertManyArguments<TSchema>> | EventCallback<InsertManyArguments<DefaultSchema>>
-  ): this;
+    event: 'pre-insert-many',
+    callback: (
+      docs: T[],
+      options?: CollectionInsertOneOptions
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'post-insert-many',
-    listener: EventCallback<InsertManyArguments<TSchema>> | EventCallback<InsertManyArguments<DefaultSchema>>
-  ): this;
+    event: 'post-insert-many',
+    callback: (
+      result: T[],
+      docs: T[],
+      options?: CollectionInsertOneOptions
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'pre-find',
-    listener: EventCallback<FindArguments<TSchema>> | EventCallback<FindArguments<DefaultSchema>>
-  ): this;
+    event: 'pre-find',
+    callback: (
+      filter: FilterQuery<T>,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'post-find',
-    listener: EventCallback<FindArguments<TSchema>> | EventCallback<FindArguments<DefaultSchema>>
-  ): this;
+    event: 'post-find',
+    callback: (
+      result: T[],
+      filter: FilterQuery<T>,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'pre-find-one',
-    listener: EventCallback<FindOneArguments<TSchema>> | EventCallback<FindOneArguments<DefaultSchema>>
-  ): this;
+    event: 'pre-find-one',
+    callback: (
+      filter: FilterQuery<T>,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'post-find-one',
-    listener: EventCallback<FindOneArguments<TSchema>> | EventCallback<FindOneArguments<DefaultSchema>>
-  ): this;
+    event: 'post-find-one',
+    callback: (
+      result: T | null,
+      filter: FilterQuery<T>,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'pre-update-one',
-    listener: EventCallback<UpdateOneArguments<TSchema>> | EventCallback<UpdateOneArguments<DefaultSchema>>
-  ): this;
+    event: 'pre-find-by-id',
+    callback: (
+      id: string,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'post-update-one',
-    listener: EventCallback<UpdateOneArguments<TSchema>> | EventCallback<UpdateOneArguments<DefaultSchema>>
-  ): this;
+    event: 'post-find-by-id',
+    callback: (
+      result: T | null,
+      id: string,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'pre-update-many',
-    listener: EventCallback<UpdateManyArguments<TSchema>> | EventCallback<UpdateManyArguments<DefaultSchema>>
-  ): this;
+    event: 'pre-update-one',
+    callback: (
+      filter: FilterQuery<T>,
+      docs: T,
+      options?: UpdateOneOptions
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'post-update-many',
-    listener: EventCallback<UpdateManyArguments<TSchema>> | EventCallback<UpdateManyArguments<DefaultSchema>>
-  ): this;
+    event: 'post-update-one',
+    callback: (
+      result: T | null,
+      filter: FilterQuery<T>,
+      docs: T,
+      options?: UpdateOneOptions
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'pre-delete-one',
-    listener: EventCallback<DeleteOneArguments<TSchema>> | EventCallback<DeleteOneArguments<DefaultSchema>>
-  ): this;
+    event: 'pre-update-many',
+    callback: (
+      filter: FilterQuery<T>,
+      docs: T,
+      options?: UpdateManyOptions
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'post-delete-one',
-    listener: EventCallback<DeleteOneArguments<TSchema>> | EventCallback<DeleteOneArguments<DefaultSchema>>
-  ): this;
+    event: 'post-update-many',
+    callback: (
+      result: T[],
+      filter: FilterQuery<T>,
+      docs: T,
+      options?: UpdateManyOptions
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'pre-delete-many',
-    listener: EventCallback<DeleteManyArguments<TSchema>> | EventCallback<DeleteManyArguments<DefaultSchema>>
-  ): this;
+    event: 'pre-update-by-id',
+    callback: (
+      id: string,
+      docs: T,
+      options?: UpdateOneOptions
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'post-delete-many',
-    listener: EventCallback<DeleteManyArguments<TSchema>> | EventCallback<DeleteManyArguments<DefaultSchema>>
-  ): this;
-  on(eventName: 'collection-name-changed', listener: EventCollectionNameChangedCallback): this;
+    event: 'post-update-by-id',
+    callback: (
+      result: T | null,
+      id: string,
+      docs: T,
+      options?: UpdateOneOptions
+    ) => void | Promise<void>
+  ): this
   on(
-    eventName: 'collection-changed',
-    listener: EventCollectoinCallback<TSchema> | EventCollectoinCallback<DefaultSchema>
-  ): this;
-  on(eventName: 'connector-changed', listener: EventConnectorChangedCallback): this;
-  on(eventName: 'setting-changed', listener: EventSettingChangedCallback): this;
+    event: 'pre-delete-one',
+    callback: (
+      filter: FilterQuery<T>,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  on(
+    event: 'post-delete-one',
+    callback: (
+      result: T | null,
+      filter: FilterQuery<T>,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  on(
+    event: 'pre-delete-many',
+    callback: (
+      filter: FilterQuery<T>,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  on(
+    event: 'post-delete-many',
+    callback: (
+      result: T[],
+      filter: FilterQuery<T>,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  on(
+    event: 'pre-delete-by-id',
+    callback: (
+      id: string,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  on(
+    event: 'post-delete-by-id',
+    callback: (
+      result: T | null,
+      id: string,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+
+  once(event: 'created', callback: () => void | Promise<void>): this
+  once(event: 'pre-reset', callback: () => void | Promise<void>): this
+  once(event: 'post-reset', callback: () => void | Promise<void>): this
+  once(
+    event: 'pre-insert-one',
+    callback: (
+      docs: T,
+      options?: CollectionInsertOneOptions
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'post-insert-one',
+    callback: (
+      result: T | null,
+      docs: T,
+      options?: CollectionInsertOneOptions
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'pre-insert-many',
+    callback: (
+      docs: T[],
+      options?: CollectionInsertOneOptions
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'post-insert-many',
+    callback: (
+      result: T[],
+      docs: T[],
+      options?: CollectionInsertOneOptions
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'pre-find',
+    callback: (
+      filter: FilterQuery<T>,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'post-find',
+    callback: (
+      result: T[],
+      filter: FilterQuery<T>,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'pre-find-one',
+    callback: (
+      filter: FilterQuery<T>,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'post-find-one',
+    callback: (
+      result: T | null,
+      filter: FilterQuery<T>,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'pre-find-by-id',
+    callback: (
+      id: string,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'post-find-by-id',
+    callback: (
+      result: T | null,
+      id: string,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'pre-update-one',
+    callback: (
+      filter: FilterQuery<T>,
+      docs: T,
+      options?: UpdateOneOptions
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'post-update-one',
+    callback: (
+      result: T | null,
+      filter: FilterQuery<T>,
+      docs: T,
+      options?: UpdateOneOptions
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'pre-update-many',
+    callback: (
+      filter: FilterQuery<T>,
+      docs: T,
+      options?: UpdateManyOptions
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'post-update-many',
+    callback: (
+      result: T[],
+      filter: FilterQuery<T>,
+      docs: T,
+      options?: UpdateManyOptions
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'pre-update-by-id',
+    callback: (
+      id: string,
+      docs: T,
+      options?: UpdateOneOptions
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'post-update-by-id',
+    callback: (
+      result: T | null,
+      id: string,
+      docs: T,
+      options?: UpdateOneOptions
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'pre-delete-one',
+    callback: (
+      filter: FilterQuery<T>,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'post-delete-one',
+    callback: (
+      result: T | null,
+      filter: FilterQuery<T>,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'pre-delete-many',
+    callback: (
+      filter: FilterQuery<T>,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'post-delete-many',
+    callback: (
+      result: T[],
+      filter: FilterQuery<T>,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'pre-delete-by-id',
+    callback: (
+      id: string,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  once(
+    event: 'post-delete-by-id',
+    callback: (
+      result: T | null,
+      id: string,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+
+  addListener(event: 'created', callback: () => void | Promise<void>): this
+  addListener(event: 'pre-reset', callback: () => void | Promise<void>): this
+  addListener(event: 'post-reset', callback: () => void | Promise<void>): this
+  addListener(
+    event: 'pre-insert-one',
+    callback: (
+      docs: T,
+      options?: CollectionInsertOneOptions
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'post-insert-one',
+    callback: (
+      result: T | null,
+      docs: T,
+      options?: CollectionInsertOneOptions
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'pre-insert-many',
+    callback: (
+      docs: T[],
+      options?: CollectionInsertOneOptions
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'post-insert-many',
+    callback: (
+      result: T[],
+      docs: T[],
+      options?: CollectionInsertOneOptions
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'pre-find',
+    callback: (
+      filter: FilterQuery<T>,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'post-find',
+    callback: (
+      result: T[],
+      filter: FilterQuery<T>,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'pre-find-one',
+    callback: (
+      filter: FilterQuery<T>,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'post-find-one',
+    callback: (
+      result: T | null,
+      filter: FilterQuery<T>,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'pre-find-by-id',
+    callback: (
+      id: string,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'post-find-by-id',
+    callback: (
+      result: T | null,
+      id: string,
+      options?: FindOneOptions<any>
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'pre-update-one',
+    callback: (
+      filter: FilterQuery<T>,
+      docs: T,
+      options?: UpdateOneOptions
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'post-update-one',
+    callback: (
+      result: T | null,
+      filter: FilterQuery<T>,
+      docs: T,
+      options?: UpdateOneOptions
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'pre-update-many',
+    callback: (
+      filter: FilterQuery<T>,
+      docs: T,
+      options?: UpdateManyOptions
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'post-update-many',
+    callback: (
+      result: T[],
+      filter: FilterQuery<T>,
+      docs: T,
+      options?: UpdateManyOptions
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'pre-update-by-id',
+    callback: (
+      id: string,
+      docs: T,
+      options?: UpdateOneOptions
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'post-update-by-id',
+    callback: (
+      result: T | null,
+      id: string,
+      docs: T,
+      options?: UpdateOneOptions
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'pre-delete-one',
+    callback: (
+      filter: FilterQuery<T>,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'post-delete-one',
+    callback: (
+      result: T | null,
+      filter: FilterQuery<T>,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'pre-delete-many',
+    callback: (
+      filter: FilterQuery<T>,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'post-delete-many',
+    callback: (
+      result: T[],
+      filter: FilterQuery<T>,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'pre-delete-by-id',
+    callback: (
+      id: string,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
+  addListener(
+    event: 'post-delete-by-id',
+    callback: (
+      result: T | null,
+      id: string,
+      options?: CommonOptions & { bypassDocumentValidation?: boolean }
+    ) => void | Promise<void>
+  ): this
 }
 
-export type ControllerOptions = {
-  connector: Connector;
-};
+export * from './constant'
+export * from './util'
 
-// We can use TypeScript Omit once minimum required TypeScript Version is above 3.5
-export type Omit<T, K> = Pick<T, Exclude<keyof T, K>>;
-// TypeScript Omit (Exclude to be specific) does not work for objects with an "any" indexed type
-export type EnhancedOmit<T, K> = string | number extends keyof T
-  ? T // T has indexed type e.g. { _id: string; [k: string]: any; } or it is "any"
-  : Omit<T, K>;
-export type ExtractIdType<TSchema> = TSchema extends { _id: infer U } // user has defined a type for _id
-  ? {} extends U
-    ? Exclude<U, {}>
-    : unknown extends U
-    ? ObjectId
-    : U
-  : ObjectId; // user has not defined _id on schema
-// this makes _id optional
-export type OptionalId<TSchema extends { _id?: any }> = ObjectId extends TSchema['_id'] // a Schema with ObjectId _id type or "any" or "indexed type" provided
-  ? EnhancedOmit<TSchema, '_id'> & { _id?: ExtractIdType<TSchema> } // a Schema provided but _id type is not ObjectId
-  : WithId<TSchema>;
-// this adds _id as a required property
-export type WithId<TSchema> = EnhancedOmit<TSchema, '_id'> & { _id: ExtractIdType<TSchema> };
-
-export type EventCallback<Arguments> = (args: Arguments) => void;
-export type EventCollectionNameChangedCallback = (current: string, previous: string) => void;
-export type EventCollectoinCallback<TSchema> = (current: Collection<TSchema>, previous: Collection<TSchema>) => void;
-export type EventConnectorChangedCallback = (
-  current: Connector,
-  previous: {
-    connectionString: string;
-    databaseName: string;
-    options: MongoClientOptions;
-  }
-) => void;
-export type EventSettingChangedCallback = (args: {
-  type: 'collection-name' | 'collection' | 'connector';
-  current: any;
-  previous: any;
-}) => void;
-
-export type InsertOneResult<TSchema> = InsertOneWriteOpResult<WithId<TSchema>>;
-export type InsertOneArguments<TSchema> = {
-  result?: InsertOneResult<TSchema>;
-  docs: OptionalId<TSchema>;
-  options?: CollectionInsertOneOptions;
-};
-
-export type InsertManyResult<TSchema> = InsertWriteOpResult<WithId<TSchema>>;
-export type InsertManyArguments<TSchema> = {
-  result?: InsertManyResult<TSchema>;
-  docs: Array<OptionalId<TSchema>>;
-  options?: CollectionInsertManyOptions;
-};
-
-export type FindResult<TSchema> = Cursor<TSchema>;
-export type FindArguments<TSchema> = {
-  result?: FindResult<TSchema>;
-  filter: FilterQuery<TSchema>;
-  options?: FindOneOptions<TSchema>;
-};
-
-export type FindOneResult<TSchema> = TSchema | null;
-export type FindOneArguments<TSchema> = {
-  result?: FindOneResult<TSchema>;
-  filter: FilterQuery<TSchema>;
-  options?: FindOneOptions<TSchema>;
-};
-
-export type UpdateOneResult<TSchema> = UpdateWriteOpResult;
-export type UpdateOneArguments<TSchema> = {
-  result?: UpdateOneResult<TSchema>;
-  filter: FilterQuery<TSchema>;
-  update: UpdateQuery<TSchema> | Partial<TSchema>;
-  options?: UpdateOneOptions;
-};
-
-export type UpdateManyResult<TSchema> = UpdateWriteOpResult;
-export type UpdateManyArguments<TSchema> = {
-  result?: UpdateManyResult<TSchema>;
-  filter: FilterQuery<TSchema>;
-  update: UpdateQuery<TSchema> | Partial<TSchema>;
-  options?: UpdateManyOptions;
-};
-
-export type DeleteOneResult<TSchema> = DeleteWriteOpResultObject;
-export type DeleteOneArguments<TSchema> = {
-  result?: DeleteOneResult<TSchema>;
-  filter: FilterQuery<TSchema>;
-  options?: CommonOptions & { bypassDocumentValidation?: boolean };
-};
-
-export type DeleteManyResult<TSchema> = DeleteWriteOpResultObject;
-export type DeleteManyArguments<TSchema> = {
-  result?: DeleteManyResult<TSchema>;
-  filter: FilterQuery<TSchema>;
-  options?: CommonOptions;
-};
+export default Controller
